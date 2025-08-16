@@ -1,45 +1,48 @@
 from flask import Flask, render_template, request, send_from_directory
-from tensorflow.keras.models import load_model
-from keras.preprocessing.image import load_img, img_to_array
+import onnxruntime as ort
+from PIL import Image
 import numpy as np
 import os
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# Paths
-MODEL_PATH = "models/mobilenetv2_classifier.h5"
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-
-# Load model safely
-try:
-    model = load_model(MODEL_PATH)
-except Exception as e:
-    raise RuntimeError(f"❌ Could not load model from {MODEL_PATH}: {e}")
+# Load the ONNX model
+model_path = "models/mobilenetv2_classifier.onnx"
+session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
 # Class labels
-class_labels = ["pituitary", "glioma", "notumor", "meningioma"]
+class_labels = ['pituitary', 'glioma', 'notumor', 'meningioma']
 
-# ---- Prediction helper ----
+# Define uploads folder
+UPLOAD_FOLDER = "./uploads"
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+# Helper function to preprocess and predict
 def predict_tumor(image_path):
     IMAGE_SIZE = 128
-    img = load_img(image_path, target_size=(IMAGE_SIZE, IMAGE_SIZE))
-    img_array = img_to_array(img) / 255.0  # Normalize
+    img = Image.open(image_path).convert("RGB")
+    img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
+    img_array = np.array(img, dtype=np.float32) / 255.0
     img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
 
-    predictions = model.predict(img_array)
+    # Run inference
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    predictions = session.run([output_name], {input_name: img_array})[0]
+
     predicted_class_index = np.argmax(predictions, axis=1)[0]
-    confidence_score = float(np.max(predictions, axis=1)[0])
+    confidence_score = np.max(predictions, axis=1)[0]
 
     if class_labels[predicted_class_index] == "notumor":
         return "No Tumor", confidence_score
     else:
         return f"Tumor: {class_labels[predicted_class_index]}", confidence_score
 
-
-# ---- Routes ----
+# Routes
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -59,12 +62,9 @@ def index():
 
     return render_template("index.html", result=None)
 
-
 @app.route("/uploads/<filename>")
 def get_uploaded_file(filename):
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
-
-# Only needed for local development
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=10000)
